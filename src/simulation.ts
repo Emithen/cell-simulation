@@ -11,6 +11,7 @@ export type Cell = {
   y: number
   energy: number
   age: number
+  generation: number
   dna: DNA
 }
 
@@ -25,11 +26,12 @@ export type SimulationState = {
   width: number
   height: number
   tick: number
+  births: number
+  deaths: number
   cells: Cell[]
   foods: Food[]
 }
 
-// 시뮬레이션 튜닝 파라미터
 export type SimulationConfig = {
   width: number
   height: number
@@ -38,25 +40,54 @@ export type SimulationConfig = {
   startEnergy: number
   foodEnergy: number
   survivalCost: number
+  foodSpawnRate: number
+  maxFoodCount: number
+  energySplitRatio: number
+  mutationStep: number
+  maxAge: number
+}
+
+export type SimulationSummary = {
+  averageEnergy: number
+  averageMoveCost: number
+  averageDivideThreshold: number
+  averageMutationRate: number
+  averageVisionRange: number
+  maxGeneration: number
 }
 
 export const DEFAULT_SIMULATION_CONFIG: SimulationConfig = {
-  width: 8,
-  height: 8,
-  initialCellCount: 2,
-  initialFoodCount: 24,
+  width: 28,
+  height: 18,
+  initialCellCount: 8,
+  initialFoodCount: 86,
   startEnergy: 40,
   foodEnergy: 20,
   survivalCost: 0.2,
+  foodSpawnRate: 4,
+  maxFoodCount: 140,
+  energySplitRatio: 0.48,
+  mutationStep: 0.16,
+  maxAge: 520,
 }
 
-// 초기 상태 생성 함수
+const DIRECTIONS = [
+  { x: 0, y: -1 },
+  { x: 1, y: 0 },
+  { x: 0, y: 1 },
+  { x: -1, y: 0 },
+]
+
 function createId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`
 }
 
 function randomInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
 }
 
 function createRandomDNA(): DNA {
@@ -67,69 +98,6 @@ function createRandomDNA(): DNA {
     visionRange: randomInt(2, 7),
   }
 }
-
-function getRandomEmptyPosition(state: SimulationState): { x: number; y: number } | null {
-  const maxAttempts = state.width * state.height
-
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const x = randomInt(0, state.width - 1)
-    const y = randomInt(0, state.height - 1)
-
-    if (!isOccupied(state, x, y)) {
-      return { x, y }
-    }
-  }
-
-  return null
-}
-
-export function createInitialState(
-  config: SimulationConfig = DEFAULT_SIMULATION_CONFIG,
-): SimulationState {
-  const state: SimulationState = {
-    width: config.width,
-    height: config.height,
-    tick: 0,
-    cells: [],
-    foods: [],
-  }
-
-  for (let i = 0; i < config.initialCellCount; i += 1) {
-    const position = getRandomEmptyPosition(state)
-
-    if (position === null) {
-      break
-    }
-
-    state.cells.push({
-      id: createId('cell'),
-      x: position.x,
-      y: position.y,
-      energy: config.startEnergy,
-      age: 0,
-      dna: createRandomDNA(),
-    })
-  }
-
-  for (let i = 0; i < config.initialFoodCount; i += 1) {
-    const position = getRandomEmptyPosition(state)
-    if (position === null) break
-
-    state.foods.push({
-      id: createId('food'),
-      x: position.x,
-      y: position.y,
-      energy: config.foodEnergy,
-    })
-  }
-
-  return state
-}
-
-// 빈 grid 크기 정하기
-// 랜덤 위치에 세포 10개 배치
-// 랜덤 위치에 먹이 40개 배치
-// 겹치는 좌표가 없게 하기
 
 function hasCellAt(state: SimulationState, x: number, y: number): boolean {
   return state.cells.some((cell) => cell.x === x && cell.y === y)
@@ -151,86 +119,304 @@ function isInsideGrid(state: SimulationState, x: number, y: number): boolean {
   return x >= 0 && x < state.width && y >= 0 && y < state.height
 }
 
-function getRandomMove(cell: Cell, state: SimulationState): { x: number; y: number } {
-  const directions = [
-    { x: 0, y: -1 },
-    { x: 1, y: 0 },
-    { x: 0, y: 1 },
-    { x: -1, y: 0 },
-  ]
-  const direction = directions[randomInt(0, directions.length - 1)]
-  const nextPosition = {
-    x: cell.x + direction.x,
-    y: cell.y + direction.y,
+function getRandomEmptyPosition(state: SimulationState): { x: number; y: number } | null {
+  const maxAttempts = state.width * state.height
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const x = randomInt(0, state.width - 1)
+    const y = randomInt(0, state.height - 1)
+
+    if (!isOccupied(state, x, y)) {
+      return { x, y }
+    }
   }
 
-  if (
-    !isInsideGrid(state, nextPosition.x, nextPosition.y) ||
-    hasCellAt(state, nextPosition.x, nextPosition.y)
-  ) {
+  return null
+}
+
+function getManhattanDistance(
+  first: { x: number; y: number },
+  second: { x: number; y: number },
+): number {
+  return Math.abs(first.x - second.x) + Math.abs(first.y - second.y)
+}
+
+function getOpenNeighborPositions(
+  cell: Cell,
+  state: SimulationState,
+): Array<{ x: number; y: number }> {
+  return DIRECTIONS.map((direction) => ({
+    x: cell.x + direction.x,
+    y: cell.y + direction.y,
+  })).filter(
+    (position) =>
+      isInsideGrid(state, position.x, position.y) &&
+      !hasCellAt(state, position.x, position.y),
+  )
+}
+
+function getNextPosition(cell: Cell, state: SimulationState): { x: number; y: number } {
+  const openPositions = getOpenNeighborPositions(cell, state)
+
+  if (openPositions.length === 0) {
     return { x: cell.x, y: cell.y }
   }
 
-  return nextPosition
+  const nearbyFoods = state.foods
+    .map((food) => ({
+      food,
+      distance: getManhattanDistance(cell, food),
+    }))
+    .filter(({ distance }) => distance <= cell.dna.visionRange)
+    .sort((first, second) => first.distance - second.distance)
+
+  if (nearbyFoods.length === 0) {
+    return openPositions[randomInt(0, openPositions.length - 1)]
+  }
+
+  const target = nearbyFoods[0].food
+  const bestPositions = openPositions
+    .map((position) => ({
+      position,
+      distance: getManhattanDistance(position, target),
+    }))
+    .sort((first, second) => first.distance - second.distance)
+  const bestDistance = bestPositions[0].distance
+  const candidates = bestPositions.filter(({ distance }) => distance === bestDistance)
+
+  return candidates[randomInt(0, candidates.length - 1)].position
 }
 
-// tick 함수 프로토타입
-// export function tick(state: SimulationState): SimulationState
-// 모든 세포 age + 1
-// 모든 세포 energy - moveCost
-// 에너지 0 이하 세포 제거
-// tick + 1
-export function tick(state: SimulationState): SimulationState {
-  const nextCells: Cell[] = []
-  const nextFoods: Food[] = [...state.foods]
+function createFoodAt(x: number, y: number, config: SimulationConfig): Food {
+  return {
+    id: createId('food'),
+    x,
+    y,
+    energy: config.foodEnergy,
+  }
+}
+
+function shouldMutate(mutationRate: number): boolean {
+  return Math.random() < mutationRate
+}
+
+function mutateDNA(dna: DNA, config: SimulationConfig): DNA {
+  const mutationAmount = (): number => (Math.random() * 2 - 1) * config.mutationStep
+
+  return {
+    moveCost: clamp(dna.moveCost + mutationAmount(), 0.25, 3),
+    divideThreshold: Math.round(
+      clamp(dna.divideThreshold + mutationAmount() * 40, 35, 160),
+    ),
+    mutationRate: clamp(dna.mutationRate + mutationAmount() * 0.04, 0.005, 0.18),
+    visionRange: Math.round(clamp(dna.visionRange + mutationAmount() * 4, 1, 10)),
+  }
+}
+
+function createChildCell(
+  parent: Cell,
+  position: { x: number; y: number },
+  energy: number,
+  config: SimulationConfig,
+): Cell {
+  return {
+    ...parent,
+    id: createId('cell'),
+    x: position.x,
+    y: position.y,
+    energy,
+    age: 0,
+    generation: parent.generation + 1,
+    dna: shouldMutate(parent.dna.mutationRate) ? mutateDNA(parent.dna, config) : { ...parent.dna },
+  }
+}
+
+export function createInitialState(
+  config: SimulationConfig = DEFAULT_SIMULATION_CONFIG,
+): SimulationState {
+  const state: SimulationState = {
+    width: config.width,
+    height: config.height,
+    tick: 0,
+    births: 0,
+    deaths: 0,
+    cells: [],
+    foods: [],
+  }
+
+  for (let i = 0; i < config.initialCellCount; i += 1) {
+    const position = getRandomEmptyPosition(state)
+
+    if (position === null) {
+      break
+    }
+
+    state.cells.push({
+      id: createId('cell'),
+      x: position.x,
+      y: position.y,
+      energy: config.startEnergy,
+      age: 0,
+      generation: 1,
+      dna: createRandomDNA(),
+    })
+  }
+
+  return addFood(state, config.initialFoodCount, config)
+}
+
+export function addFood(
+  state: SimulationState,
+  count = 12,
+  config: SimulationConfig = DEFAULT_SIMULATION_CONFIG,
+): SimulationState {
+  const nextFoods = [...state.foods]
   const nextState: SimulationState = {
+    ...state,
+    foods: nextFoods,
+  }
+
+  for (let i = 0; i < count && nextFoods.length < config.maxFoodCount; i += 1) {
+    const position = getRandomEmptyPosition(nextState)
+
+    if (position === null) {
+      break
+    }
+
+    nextFoods.push(createFoodAt(position.x, position.y, config))
+  }
+
+  return {
+    ...state,
+    foods: nextFoods,
+  }
+}
+
+function spawnFood(state: SimulationState, config: SimulationConfig): Food[] {
+  return addFood(state, config.foodSpawnRate, config).foods
+}
+
+export function getSimulationSummary(state: SimulationState): SimulationSummary {
+  if (state.cells.length === 0) {
+    return {
+      averageEnergy: 0,
+      averageMoveCost: 0,
+      averageDivideThreshold: 0,
+      averageMutationRate: 0,
+      averageVisionRange: 0,
+      maxGeneration: 0,
+    }
+  }
+
+  const totals = state.cells.reduce(
+    (summary, cell) => ({
+      energy: summary.energy + cell.energy,
+      moveCost: summary.moveCost + cell.dna.moveCost,
+      divideThreshold: summary.divideThreshold + cell.dna.divideThreshold,
+      mutationRate: summary.mutationRate + cell.dna.mutationRate,
+      visionRange: summary.visionRange + cell.dna.visionRange,
+      maxGeneration: Math.max(summary.maxGeneration, cell.generation),
+    }),
+    {
+      energy: 0,
+      moveCost: 0,
+      divideThreshold: 0,
+      mutationRate: 0,
+      visionRange: 0,
+      maxGeneration: 0,
+    },
+  )
+
+  return {
+    averageEnergy: totals.energy / state.cells.length,
+    averageMoveCost: totals.moveCost / state.cells.length,
+    averageDivideThreshold: totals.divideThreshold / state.cells.length,
+    averageMutationRate: totals.mutationRate / state.cells.length,
+    averageVisionRange: totals.visionRange / state.cells.length,
+    maxGeneration: totals.maxGeneration,
+  }
+}
+
+export function tick(
+  state: SimulationState,
+  config: SimulationConfig = DEFAULT_SIMULATION_CONFIG,
+): SimulationState {
+  const nextCells: Cell[] = []
+  let nextFoods: Food[] = [...state.foods]
+  let births = state.births
+  let deaths = state.deaths
+  const nextStateBase: SimulationState = {
     ...state,
     tick: state.tick + 1,
     cells: nextCells,
     foods: nextFoods,
   }
 
-  for (const cell of state.cells) {
+  for (let cellIndex = 0; cellIndex < state.cells.length; cellIndex += 1) {
+    const cell = state.cells[cellIndex]
     const blockedCellState: SimulationState = {
-      ...nextState,
-      cells: [
-        ...state.cells.filter((otherCell) => otherCell.id !== cell.id),
-        ...nextCells,
-      ],
+      ...nextStateBase,
+      cells: [...state.cells.slice(cellIndex + 1), ...nextCells],
+      foods: nextFoods,
     }
-    const nextPosition = getRandomMove(cell, blockedCellState)
+    const nextPosition = getNextPosition(cell, blockedCellState)
     const didMove = nextPosition.x !== cell.x || nextPosition.y !== cell.y
-    const food = findFoodAt(nextState, nextPosition.x, nextPosition.y)
+    const food = findFoodAt({ ...nextStateBase, foods: nextFoods }, nextPosition.x, nextPosition.y)
     const nextEnergy =
       cell.energy -
-      DEFAULT_SIMULATION_CONFIG.survivalCost -
+      config.survivalCost -
       (didMove ? cell.dna.moveCost : 0) +
       (food?.energy ?? 0)
 
-    if (nextEnergy <= 0) {
+    if (nextEnergy <= 0 || cell.age + 1 > config.maxAge) {
+      deaths += 1
       continue
     }
 
     if (food) {
-      const foodIndex = nextFoods.findIndex((nextFood) => nextFood.id === food.id)
-
-      if (foodIndex !== -1) {
-        nextFoods.splice(foodIndex, 1)
-      }
+      nextFoods = nextFoods.filter((nextFood) => nextFood.id !== food.id)
     }
 
-    nextCells.push({
+    const updatedCell: Cell = {
       ...cell,
       x: nextPosition.x,
       y: nextPosition.y,
       age: cell.age + 1,
       energy: nextEnergy,
-    })
+    }
+    const divisionState: SimulationState = {
+      ...nextStateBase,
+      cells: [...nextCells, updatedCell],
+      foods: nextFoods,
+    }
+    const childPositions = getOpenNeighborPositions(updatedCell, divisionState)
+
+    if (nextEnergy >= updatedCell.dna.divideThreshold && childPositions.length > 0) {
+      const childEnergy = nextEnergy * config.energySplitRatio
+      const parentEnergy = nextEnergy - childEnergy
+      const childPosition = childPositions[randomInt(0, childPositions.length - 1)]
+
+      nextCells.push({
+        ...updatedCell,
+        energy: parentEnergy,
+      })
+      nextCells.push(createChildCell(updatedCell, childPosition, childEnergy, config))
+      births += 1
+    } else {
+      nextCells.push(updatedCell)
+    }
+  }
+
+  const nextState: SimulationState = {
+    ...nextStateBase,
+    births,
+    deaths,
+    cells: nextCells,
+    foods: nextFoods,
   }
 
   return {
     ...nextState,
-    cells: nextCells,
-    foods: nextFoods,
+    foods: spawnFood(nextState, config),
   }
 }
