@@ -5,9 +5,8 @@ import {
   createInitialState,
   getSimulationSummary,
   tick,
-  type SimulationConfig,
-  type SimulationState,
 } from './simulation'
+import type { SimulationConfig, SimulationState } from './types'
 
 const CELL_SIZE = 24
 const FOOD_BURST_COUNT = 24

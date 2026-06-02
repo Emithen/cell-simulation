@@ -1,60 +1,4 @@
-export type DNA = {
-  moveCost: number
-  divideThreshold: number
-  mutationRate: number
-  visionRange: number
-}
-
-export type Cell = {
-  id: string
-  x: number
-  y: number
-  energy: number
-  age: number
-  generation: number
-  dna: DNA
-}
-
-export type Food = {
-  id: string
-  x: number
-  y: number
-  energy: number
-}
-
-export type SimulationState = {
-  width: number
-  height: number
-  tick: number
-  births: number
-  deaths: number
-  cells: Cell[]
-  foods: Food[]
-}
-
-export type SimulationConfig = {
-  width: number
-  height: number
-  initialCellCount: number
-  initialFoodCount: number
-  startEnergy: number
-  foodEnergy: number
-  survivalCost: number
-  foodSpawnRate: number
-  maxFoodCount: number
-  energySplitRatio: number
-  mutationStep: number
-  maxAge: number
-}
-
-export type SimulationSummary = {
-  averageEnergy: number
-  averageMoveCost: number
-  averageDivideThreshold: number
-  averageMutationRate: number
-  averageVisionRange: number
-  maxGeneration: number
-}
+import type { DNA, Cell, Food, SimulationConfig, SimulationState, SimulationSummary } from './types'
 
 export const DEFAULT_SIMULATION_CONFIG: SimulationConfig = {
   width: 28,
@@ -296,6 +240,23 @@ function spawnFood(state: SimulationState, config: SimulationConfig): Food[] {
   return addFood(state, config.foodSpawnRate, config).foods
 }
 
+/*
+함수명: getSimulationSummary
+
+설명: 시뮬레이션의 요약 정보를 계산한다.
+
+사용: 
+  main.ts
+    updateStats()
+      getSimulationSummary(state)
+  > 현황 보드에 표시할 정보를 갱신
+
+인자:
+  state: SimulationState
+
+반환값:
+  SimulationSummary
+*/
 export function getSimulationSummary(state: SimulationState): SimulationSummary {
   if (state.cells.length === 0) {
     return {
@@ -337,14 +298,29 @@ export function getSimulationSummary(state: SimulationState): SimulationSummary 
   }
 }
 
+/*
+함수명: tick
+
+설명: 시뮬레이션의 한 틱을 처리한다.
+
+인자:
+  state: SimulationState
+  config: SimulationConfig
+
+반환값:
+  SimulationState
+*/
 export function tick(
   state: SimulationState,
   config: SimulationConfig = DEFAULT_SIMULATION_CONFIG,
 ): SimulationState {
+  // 변수 선언
   const nextCells: Cell[] = []
   let nextFoods: Food[] = [...state.foods]
   let births = state.births
   let deaths = state.deaths
+
+  // 기본값 설정
   const nextStateBase: SimulationState = {
     ...state,
     tick: state.tick + 1,
@@ -352,6 +328,7 @@ export function tick(
     foods: nextFoods,
   }
 
+  // 모든 세포 갱신
   for (let cellIndex = 0; cellIndex < state.cells.length; cellIndex += 1) {
     const cell = state.cells[cellIndex]
     const blockedCellState: SimulationState = {
@@ -377,6 +354,7 @@ export function tick(
       nextFoods = nextFoods.filter((nextFood) => nextFood.id !== food.id)
     }
 
+    // 업데이트된 세포 생성
     const updatedCell: Cell = {
       ...cell,
       x: nextPosition.x,
@@ -384,6 +362,7 @@ export function tick(
       age: cell.age + 1,
       energy: nextEnergy,
     }
+
     const divisionState: SimulationState = {
       ...nextStateBase,
       cells: [...nextCells, updatedCell],
@@ -391,6 +370,7 @@ export function tick(
     }
     const childPositions = getOpenNeighborPositions(updatedCell, divisionState)
 
+    // nextCells 에 Cell 추가
     if (nextEnergy >= updatedCell.dna.divideThreshold && childPositions.length > 0) {
       const childEnergy = nextEnergy * config.energySplitRatio
       const parentEnergy = nextEnergy - childEnergy
@@ -407,6 +387,7 @@ export function tick(
     }
   }
 
+  // births, deaths, cells, foods 갱신
   const nextState: SimulationState = {
     ...nextStateBase,
     births,
@@ -415,6 +396,7 @@ export function tick(
     foods: nextFoods,
   }
 
+  // 음식 추가
   return {
     ...nextState,
     foods: spawnFood(nextState, config),
